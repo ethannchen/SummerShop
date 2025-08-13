@@ -7,7 +7,9 @@ spring:
 
   data:
     mongodb:
-      uri: mongodb://localhost:27017/item_db
+      host: localhost
+      port: 27017
+      database: item_db
       auto-index-creation: true
 
 eureka:

@@ -1,35 +1,207 @@
 version: '3.8'
 
 services:
-  postgres-db:
+  # PostgreSQL - for Account Service and Auth Service
+  postgres:
     image: postgres:15-alpine
-    container_name: account-postgres
+    container_name: summershop-postgres
     environment:
-      POSTGRES_DB: account_db
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
+      POSTGRES_MULTIPLE_DATABASES: account_db,auth_db,payment_db
     ports:
       - "5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
+      - ./init-scripts/init-postgres.sql:/docker-entrypoint-initdb.d/init.sql
     networks:
       - summershop-network
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
+  # MongoDB - for Item Service
   mongodb:
     image: mongo:6.0
-    container_name: item-mongodb
+    container_name: summershop-mongodb
     environment:
       MONGO_INITDB_DATABASE: item_db
     ports:
       - "27017:27017"
     volumes:
-      - mongo-data:/data/db
+      - mongodb-data:/data/db
+    networks:
+      - summershop-network
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/item_db --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Cassandra - for Order Service
+  cassandra:
+    image: cassandra:4.1
+    container_name: summershop-cassandra
+    environment:
+      CASSANDRA_CLUSTER_NAME: summershop-cluster
+      CASSANDRA_DC: datacenter1
+      CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
+    ports:
+      - "9042:9042"
+    volumes:
+      - cassandra-data:/var/lib/cassandra
+      - ./init-scripts/init-cassandra.cql:/docker-entrypoint-initdb.d/init.cql
+    networks:
+      - summershop-network
+    healthcheck:
+      test: ["CMD", "cqlsh", "-e", "describe keyspaces"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Zookeeper - for Kafka
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    container_name: summershop-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-logs:/var/lib/zookeeper/log
+    networks:
+      - summershop-network
+    healthcheck:
+      test: ["CMD", "zkServer.sh", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Kafka
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: summershop-kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"
+      - "9093:9093"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,PLAINTEXT_INTERNAL://kafka:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    networks:
+      - summershop-network
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Kafka UI (Optional - for monitoring)
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: summershop-kafka-ui
+    depends_on:
+      - kafka
+    ports:
+      - "8090:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: summershop-cluster
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9093
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+    networks:
+      - summershop-network
+
+  # Initialize Kafka Topics
+  kafka-init:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: summershop-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command: |
+      "
+      # Wait for Kafka to be ready
+      echo 'Waiting for Kafka to be ready...'
+      sleep 10
+      
+      # Create topics
+      kafka-topics --create --if-not-exists --topic order-events --bootstrap-server kafka:9093 --partitions 3 --replication-factor 1
+      kafka-topics --create --if-not-exists --topic payment-events --bootstrap-server kafka:9093 --partitions 3 --replication-factor 1
+      
+      # List topics
+      echo 'Created topics:'
+      kafka-topics --list --bootstrap-server kafka:9093
+      "
+    networks:
+      - summershop-network
+
+  # Cassandra Initializer
+  cassandra-init:
+    image: cassandra:4.1
+    container_name: summershop-cassandra-init
+    depends_on:
+      cassandra:
+        condition: service_healthy
+    entrypoint: [ "/bin/bash", "-c" ]
+    command: |
+      "
+      echo 'Waiting for Cassandra to be ready...'
+      sleep 30
+
+      echo 'Creating keyspace and tables...'
+      cqlsh cassandra -e \"
+        CREATE KEYSPACE IF NOT EXISTS summershop 
+        WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1};
+
+        USE summershop;
+
+        DROP TABLE IF EXISTS orders;
+
+        CREATE TABLE IF NOT EXISTS orders (
+          order_id UUID PRIMARY KEY,
+          customer_id bigint,
+          order_status text,
+          payment_status text,
+          payment_id text,
+          total_amount decimal,
+          items_json text,
+          shipping_address text,
+          created_at timestamp,
+          updated_at timestamp
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_customer_id ON orders (customer_id);
+        CREATE INDEX IF NOT EXISTS idx_order_status ON orders (order_status);
+      \"
+
+      echo 'Cassandra initialization completed'
+      "
     networks:
       - summershop-network
 
 volumes:
   postgres-data:
-  mongo-data:
+  mongodb-data:
+  cassandra-data:
+  zookeeper-data:
+  zookeeper-logs:
+  kafka-data:
 
 networks:
   summershop-network:

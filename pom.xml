@@ -25,6 +25,9 @@
         <module>account-service</module>
         <module>item-service</module>
         <module>auth-service</module>
+        <module>kafka-config</module>
+        <module>order-service</module>
+        <module>payment-service</module>
     </modules>
 
     <properties>

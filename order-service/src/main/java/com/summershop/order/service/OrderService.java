@@ -13,6 +13,7 @@ import org.springframework.stereotype.Service;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -89,7 +90,7 @@ public class OrderService {
         log.info("Cancelling order: {}", orderId);
 
         UUID orderUuid = UUID.fromString(orderId);
-        Order order = orderRepository.findById(orderUuid)
+        Order order = orderRepository.findByOrderId(orderUuid)
                 .orElseThrow(() -> new RuntimeException("Order not found: " + orderId));
 
         if ("CANCELLED".equals(order.getOrderStatus())) {
@@ -120,7 +121,7 @@ public class OrderService {
         log.info("Updating order: {}", orderId);
 
         UUID orderUuid = UUID.fromString(orderId);
-        Order order = orderRepository.findById(orderUuid)
+        Order order = orderRepository.findByOrderId(orderUuid)
                 .orElseThrow(() -> new RuntimeException("Order not found: " + orderId));
 
         // Update fields
@@ -148,30 +149,52 @@ public class OrderService {
         log.info("Fetching order: {}", orderId);
 
         UUID orderUuid = UUID.fromString(orderId);
-        Order order = orderRepository.findById(orderUuid)
+        Order order = orderRepository.findByOrderId(orderUuid)
                 .orElseThrow(() -> new RuntimeException("Order not found: " + orderId));
 
         return mapToResponse(order);
     }
 
     public void updatePaymentStatus(String orderId, String paymentStatus, String paymentId) {
-        log.info("Updating payment status for order: {} to {}", orderId, paymentStatus);
+        try {
+            log.info("Updating payment status for order: {} to {}", orderId, paymentStatus);
 
-        UUID orderUuid = UUID.fromString(orderId);
-        Order order = orderRepository.findById(orderUuid)
-                .orElseThrow(() -> new RuntimeException("Order not found: " + orderId));
+            UUID orderUuid;
+            try {
+                orderUuid = UUID.fromString(orderId);
+            } catch (IllegalArgumentException e) {
+                log.error("Invalid UUID format for orderId: {}", orderId);
+                return;
+            }
 
-        order.setPaymentStatus(paymentStatus);
-        order.setPaymentId(paymentId);
+            // Use custom query method instead of findById
+            Optional<Order> orderOptional = orderRepository.findByOrderId(orderUuid);
 
-        if ("COMPLETED".equals(paymentStatus)) {
-            order.setOrderStatus("CONFIRMED");
-        } else if ("FAILED".equals(paymentStatus)) {
-            order.setOrderStatus("PAYMENT_FAILED");
+            if (!orderOptional.isPresent()) {
+                log.warn("Order not found: {}, might be from different environment or deleted", orderId);
+                return;
+            }
+
+            Order order = orderOptional.get();
+
+            order.setPaymentStatus(paymentStatus);
+            order.setPaymentId(paymentId);
+
+            if ("COMPLETED".equals(paymentStatus)) {
+                order.setOrderStatus("CONFIRMED");
+            } else if ("FAILED".equals(paymentStatus)) {
+                order.setOrderStatus("PAYMENT_FAILED");
+            } else if ("REFUNDED".equals(paymentStatus)) {
+                order.setOrderStatus("REFUNDED");
+            }
+
+            order.setUpdatedAt(LocalDateTime.now());
+            orderRepository.save(order);
+
+            log.info("Successfully updated order {} with payment status: {}", orderId, paymentStatus);
+        } catch (Exception e) {
+            log.error("Failed to update payment status for order: {}", orderId, e);
         }
-
-        order.setUpdatedAt(LocalDateTime.now());
-        orderRepository.save(order);
     }
 
     private OrderResponse mapToResponse(Order order) {

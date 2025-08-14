@@ -15,22 +15,62 @@ public class PaymentEventConsumer {
 
     private final OrderService orderService;
 
-    @KafkaListener(topics = KafkaTopics.PAYMENT_EVENTS, groupId = "order-service-group")
+    @KafkaListener(
+            topics = KafkaTopics.PAYMENT_EVENTS,
+            groupId = "order-service-group",
+            containerFactory = "kafkaListenerContainerFactory"
+    )
     public void handlePaymentEvent(PaymentEvent paymentEvent) {
-        log.info("Received payment event: {}", paymentEvent);
+        try {
+            log.info("Received payment event: Type={}, OrderId={}, PaymentId={}, Status={}",
+                    paymentEvent.getEventType(),
+                    paymentEvent.getOrderId(),
+                    paymentEvent.getPaymentId(),
+                    paymentEvent.getPaymentStatus());
 
-        switch (paymentEvent.getEventType()) {
-            case "COMPLETED":
-                orderService.updatePaymentStatus(paymentEvent.getOrderId(), "COMPLETED", paymentEvent.getPaymentId());
-                break;
-            case "FAILED":
-                orderService.updatePaymentStatus(paymentEvent.getOrderId(), "FAILED", paymentEvent.getPaymentId());
-                break;
-            case "REFUNDED":
-                orderService.updatePaymentStatus(paymentEvent.getOrderId(), "REFUNDED", paymentEvent.getPaymentId());
-                break;
-            default:
-                log.warn("Unknown payment event type: {}", paymentEvent.getEventType());
+            if (paymentEvent.getOrderId() == null) {
+                log.warn("Received payment event with null orderId, skipping");
+                return;
+            }
+
+            switch (paymentEvent.getEventType()) {
+                case "COMPLETED":
+                    orderService.updatePaymentStatus(
+                            paymentEvent.getOrderId(),
+                            "COMPLETED",
+                            paymentEvent.getPaymentId()
+                    );
+                    log.info("Successfully updated order {} with payment status COMPLETED",
+                            paymentEvent.getOrderId());
+                    break;
+
+                case "FAILED":
+                    orderService.updatePaymentStatus(
+                            paymentEvent.getOrderId(),
+                            "FAILED",
+                            paymentEvent.getPaymentId()
+                    );
+                    log.info("Successfully updated order {} with payment status FAILED",
+                            paymentEvent.getOrderId());
+                    break;
+
+                case "REFUNDED":
+                    orderService.updatePaymentStatus(
+                            paymentEvent.getOrderId(),
+                            "REFUNDED",
+                            paymentEvent.getPaymentId()
+                    );
+                    log.info("Successfully updated order {} with payment status REFUNDED",
+                            paymentEvent.getOrderId());
+                    break;
+
+                default:
+                    log.warn("Unknown payment event type: {}", paymentEvent.getEventType());
+            }
+        } catch (Exception e) {
+            log.error("Error processing payment event for order: {}",
+                    paymentEvent.getOrderId(), e);
+            // Consider implementing retry logic or dead letter queue here
         }
     }
 }

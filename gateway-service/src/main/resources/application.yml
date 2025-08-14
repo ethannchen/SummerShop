@@ -11,19 +11,37 @@ spring:
           enabled: true
           lower-case-service-id: true
       routes:
+        # Auth Service - No authentication required
+        - id: auth-service
+          uri: lb://auth-service
+          predicates:
+            - Path=/api/auth/**
+          filters:
+            - StripPrefix=1
+
+        # Account Service - Authentication required
         - id: account-service
           uri: lb://account-service
           predicates:
             - Path=/api/accounts/**
           filters:
             - StripPrefix=1
+            - JwtAuthenticationFilter
 
+        # Item Service - Authentication required
         - id: item-service
           uri: lb://item-service
           predicates:
             - Path=/api/items/**
           filters:
             - StripPrefix=1
+            - JwtAuthenticationFilter
+
+      default-filters:
+        - DedupeResponseHeader=Access-Control-Allow-Credentials Access-Control-Allow-Origin
+
+jwt:
+  secret: 404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970
 
 eureka:
   client:
@@ -49,3 +67,4 @@ management:
 logging:
   level:
     org.springframework.cloud.gateway: DEBUG
+    com.summershop.gateway: DEBUG

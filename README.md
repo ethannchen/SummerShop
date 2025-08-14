@@ -2,6 +2,7 @@
 
 ### Architecture Overview
 A distributed microservices architecture implementing an e-commerce system with modern cloud-native patterns.
+<img width="751" height="501" alt="summershop drawio" src="https://github.com/user-attachments/assets/494b4887-e99c-4ae7-bd7e-2e753afed977" />
 
 ### Core Services
 
